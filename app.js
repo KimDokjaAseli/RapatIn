@@ -3,7 +3,12 @@ const state = {
     currentUser: null,
     meetings: [],
     currentPage: 'home',
-    searchQuery: ''
+    searchQuery: '',
+    currentView: 'list', // 'list' or 'calendar'
+    selectedFilterTag: '', // for tag filtering
+    selectedMonth: new Date().getMonth(),
+    selectedYear: new Date().getFullYear(),
+    selectedTags: [] // temporary tags for modal
 };
 
 // API Configuration
@@ -67,6 +72,14 @@ async function apiFetch(endpoint, options = {}) {
         };
     }
     
+    // Add X-Admin-ID header if user is logged in
+    if (state.currentUser) {
+        options.headers = {
+            ...options.headers,
+            'X-Admin-ID': state.currentUser.id
+        };
+    }
+    
     try {
         const response = await fetch(`${API_BASE}${endpoint}`, options);
         const data = await response.json();
@@ -115,6 +128,7 @@ async function init() {
 function updateUI() {
     updateHeader();
     renderPage();
+    updateNavigationVisibility();
 }
 
 function updateHeader() {
@@ -122,6 +136,19 @@ function updateHeader() {
         const avatarUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(state.currentUser.name)}&background=800000&color=fff`;
         document.getElementById('header-avatar').src = avatarUrl;
         document.getElementById('header-username').textContent = state.currentUser.name.split(' ')[0];
+    }
+}
+
+function updateNavigationVisibility() {
+    const sidebarAdmin = document.getElementById('sidebar-admin-link');
+    const mobileAdmin = document.getElementById('mobile-admin-link');
+    
+    if (state.currentUser && state.currentUser.role === 'admin') {
+        if (sidebarAdmin) sidebarAdmin.classList.remove('hidden');
+        if (mobileAdmin) mobileAdmin.classList.remove('hidden');
+    } else {
+        if (sidebarAdmin) sidebarAdmin.classList.add('hidden');
+        if (mobileAdmin) mobileAdmin.classList.add('hidden');
     }
 }
 
@@ -134,7 +161,11 @@ function renderPage() {
     void container.offsetWidth; // Trigger reflow
     container.classList.add('fade-in');
 
-    const filteredMeetings = state.meetings.filter(m => 
+    let filteredMeetings = state.meetings;
+    if (state.selectedFilterTag) {
+        filteredMeetings = filteredMeetings.filter(m => m.tags && m.tags.includes(state.selectedFilterTag));
+    }
+    filteredMeetings = filteredMeetings.filter(m => 
         m.title.toLowerCase().includes(state.searchQuery.toLowerCase()) ||
         m.location.toLowerCase().includes(state.searchQuery.toLowerCase())
     );
@@ -149,8 +180,8 @@ function renderPage() {
         case 'profile':
             renderProfilePage(container);
             break;
-        case 'about':
-            renderAboutPage(container);
+        case 'admin':
+            renderAdminPage(container);
             break;
     }
 
@@ -180,13 +211,29 @@ function renderHomePage(container, filteredMeetings) {
 
             <div class="section-header">
                 <h2>Daftar Notulensi</h2>
-                <button class="btn btn-secondary" onclick="setPage('meetings')">Lihat Semua</button>
+                <div style="display: flex; gap: 1rem; align-items: center;">
+                    <div class="view-controls">
+                        <button class="btn-toggle-view ${state.currentView === 'list' ? 'active' : ''}" onclick="setView('list')">
+                            <i class="fas fa-list"></i> Daftar
+                        </button>
+                        <button class="btn-toggle-view ${state.currentView === 'calendar' ? 'active' : ''}" onclick="setView('calendar')">
+                            <i class="fas fa-calendar-alt"></i> Kalender
+                        </button>
+                    </div>
+                    <button class="btn btn-secondary" onclick="setPage('meetings')">Lihat Semua</button>
+                </div>
             </div>
 
-            <div class="meeting-grid">
-                ${filteredMeetings.slice(0, 4).map(m => createMeetingCard(m)).join('')}
-                ${filteredMeetings.length === 0 ? '<div class="empty-state">Tidak ada rapat ditemukan</div>' : ''}
-            </div>
+            ${renderTagFilters()}
+
+            ${state.currentView === 'list' 
+                ? `
+                <div class="meeting-grid">
+                    ${filteredMeetings.slice(0, 4).map(m => createMeetingCard(m)).join('')}
+                    ${filteredMeetings.length === 0 ? '<div class="empty-state">Tidak ada rapat ditemukan</div>' : ''}
+                </div>`
+                : renderCalendarView()
+            }
         </section>
     `;
     container.innerHTML = html;
@@ -197,11 +244,26 @@ function renderMeetingsPage(container, filteredMeetings) {
         <section class="meetings-section">
             <div class="section-header">
                 <h2>Semua Rapat (${filteredMeetings.length})</h2>
+                <div class="view-controls">
+                    <button class="btn-toggle-view ${state.currentView === 'list' ? 'active' : ''}" onclick="setView('list')">
+                        <i class="fas fa-list"></i> Daftar
+                    </button>
+                    <button class="btn-toggle-view ${state.currentView === 'calendar' ? 'active' : ''}" onclick="setView('calendar')">
+                        <i class="fas fa-calendar-alt"></i> Kalender
+                    </button>
+                </div>
             </div>
-            <div class="meeting-grid">
-                ${filteredMeetings.map(m => createMeetingCard(m)).join('')}
-                ${filteredMeetings.length === 0 ? '<div class="empty-state">Tidak ada rapat ditemukan</div>' : ''}
-            </div>
+
+            ${renderTagFilters()}
+
+            ${state.currentView === 'list'
+                ? `
+                <div class="meeting-grid">
+                    ${filteredMeetings.map(m => createMeetingCard(m)).join('')}
+                    ${filteredMeetings.length === 0 ? '<div class="empty-state">Tidak ada rapat ditemukan</div>' : ''}
+                </div>`
+                : renderCalendarView()
+            }
         </section>
     `;
     container.innerHTML = html;
@@ -261,40 +323,307 @@ function renderProfilePage(container) {
     document.getElementById('profile-form').addEventListener('submit', handleProfileUpdate);
 }
 
-function renderAboutPage(container) {
-    let html = `
-        <div class="about-container fade-in" style="max-width: 800px; margin: 0 auto; text-align: center;">
-            <div class="auth-logo" style="margin-bottom: 2rem;">
-                <i class="fas fa-handshake"></i>
-                <h1>RapatIn</h1>
-            </div>
-            <p style="font-size: 1.1rem; color: var(--text-muted); margin-bottom: 2rem;">
-                RapatIn adalah solusi modern untuk mendokumentasikan hasil rapat Anda. 
-                Simpan notulensi, jadwal, dan lokasi dengan tampilan yang elegan dan mudah digunakan.
-            </p>
-            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1.5rem; margin-top: 3rem;">
-                <div style="background: white; padding: 1.5rem; border-radius: var(--radius-md); border: 1px solid var(--border-color);">
-                    <i class="fas fa-bolt" style="font-size: 2rem; color: var(--primary); margin-bottom: 1rem;"></i>
-                    <h4>Cepat</h4>
-                </div>
-                <div style="background: white; padding: 1.5rem; border-radius: var(--radius-md); border: 1px solid var(--border-color);">
-                    <i class="fas fa-shield-alt" style="font-size: 2rem; color: var(--primary); margin-bottom: 1rem;"></i>
-                    <h4>Aman</h4>
-                </div>
-                <div style="background: white; padding: 1.5rem; border-radius: var(--radius-md); border: 1px solid var(--border-color);">
-                    <i class="fas fa-cloud" style="font-size: 2rem; color: var(--primary); margin-bottom: 1rem;"></i>
-                    <h4>Terintegrasi</h4>
-                </div>
-            </div>
-            <footer style="margin-top: 5rem; color: var(--text-muted);">
-                <p>&copy; 2023 RapatIn Team. All rights reserved.</p>
-            </footer>
+function renderTagFilters() {
+    const allTagsSet = new Set();
+    state.meetings.forEach(m => {
+        if (m.tags) {
+            m.tags.forEach(t => allTagsSet.add(t));
+        }
+    });
+    const uniqueTags = Array.from(allTagsSet);
+
+    if (uniqueTags.length === 0) return '';
+
+    return `
+        <div class="tag-filters-container fade-in">
+            <span class="filter-label"><i class="fas fa-filter"></i> Filter Tag:</span>
+            <span class="tag-pill ${!state.selectedFilterTag ? 'active' : ''}" onclick="filterByTag('')">Semua</span>
+            ${uniqueTags.map(tag => `
+                <span class="tag-pill ${state.selectedFilterTag === tag ? 'active' : ''}" onclick="filterByTag('${tag}')">${tag}</span>
+            `).join('')}
         </div>
     `;
-    container.innerHTML = html;
+}
+
+function filterByTag(tag) {
+    state.selectedFilterTag = tag;
+    renderPage();
+}
+
+function setView(view) {
+    state.currentView = view;
+    renderPage();
+}
+
+function renderCalendarView() {
+    const monthNames = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"];
+    
+    const firstDay = new Date(state.selectedYear, state.selectedMonth, 1);
+    const totalDays = new Date(state.selectedYear, state.selectedMonth + 1, 0).getDate();
+    let startDayOfWeek = firstDay.getDay() - 1;
+    if (startDayOfWeek === -1) startDayOfWeek = 6;
+
+    const prevMonthTotalDays = new Date(state.selectedYear, state.selectedMonth, 0).getDate();
+
+    let calendarCellsHtml = '';
+
+    for (let i = startDayOfWeek - 1; i >= 0; i--) {
+        const dayNum = prevMonthTotalDays - i;
+        calendarCellsHtml += `<div class="calendar-cell inactive"><span class="calendar-cell-num">${dayNum}</span></div>`;
+    }
+
+    const today = new Date();
+    for (let day = 1; day <= totalDays; day++) {
+        const isToday = today.getDate() === day && today.getMonth() === state.selectedMonth && today.getFullYear() === state.selectedYear;
+        const dateStr = `${state.selectedYear}-${String(state.selectedMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+        
+        const dayMeetings = state.meetings.filter(m => m.date === dateStr);
+
+        let meetingsHtml = '';
+        if (dayMeetings.length > 0) {
+            meetingsHtml = `
+                <div class="calendar-cell-meetings">
+                    ${dayMeetings.map(m => `
+                        <div class="calendar-meeting-item" onclick="event.stopPropagation(); editMeeting('${m.id}')" title="${m.title} (${m.time})">
+                            ${m.time} ${m.title}
+                        </div>
+                    `).join('')}
+                </div>
+            `;
+        }
+
+        calendarCellsHtml += `
+            <div class="calendar-cell ${isToday ? 'today' : ''}" onclick="openAddModalWithDate('${dateStr}')">
+                <span class="calendar-cell-num">${day}</span>
+                ${meetingsHtml}
+            </div>
+        `;
+    }
+
+    const totalCells = startDayOfWeek + totalDays;
+    const remainingCells = 42 - totalCells;
+    for (let i = 1; i <= remainingCells; i++) {
+        calendarCellsHtml += `<div class="calendar-cell inactive"><span class="calendar-cell-num">${i}</span></div>`;
+    }
+
+    return `
+        <div class="calendar-view-container fade-in">
+            <div class="calendar-view-header">
+                <h3>${monthNames[state.selectedMonth]} ${state.selectedYear}</h3>
+                <div class="calendar-nav-controls">
+                    <button class="calendar-nav-btn" onclick="navigateCalendar(-1)"><i class="fas fa-chevron-left"></i></button>
+                    <button class="calendar-nav-btn" onclick="navigateCalendar(1)"><i class="fas fa-chevron-right"></i></button>
+                </div>
+            </div>
+            
+            <div class="calendar-grid-header">
+                <div>Sen</div>
+                <div>Sel</div>
+                <div>Rab</div>
+                <div>Kam</div>
+                <div>Jum</div>
+                <div>Sab</div>
+                <div>Min</div>
+            </div>
+            
+            <div class="calendar-grid-days">
+                ${calendarCellsHtml}
+            </div>
+        </div>
+    `;
+}
+
+function navigateCalendar(dir) {
+    state.selectedMonth += dir;
+    if (state.selectedMonth < 0) {
+        state.selectedMonth = 11;
+        state.selectedYear--;
+    } else if (state.selectedMonth > 11) {
+        state.selectedMonth = 0;
+        state.selectedYear++;
+    }
+    renderPage();
+}
+
+function openAddModalWithDate(dateStr) {
+    openAddModal();
+    document.getElementById('date').value = dateStr;
+}
+
+async function renderAdminPage(container) {
+    if (!state.currentUser || state.currentUser.role !== 'admin') {
+        setPage('home');
+        return;
+    }
+
+    container.innerHTML = `
+        <div class="admin-container">
+            <div class="section-header">
+                <h2>Admin Panel</h2>
+            </div>
+            <div style="text-align: center; padding: 3rem;">
+                <i class="fas fa-spinner fa-spin" style="font-size: 2.5rem; color: var(--primary);"></i>
+                <p style="margin-top: 1rem; color: var(--text-muted);">Memuat data admin...</p>
+            </div>
+        </div>
+    `;
+
+    try {
+        const statsRes = await apiFetch('/admin/stats');
+        const usersRes = await apiFetch('/admin/users');
+        const meetingsRes = await apiFetch('/admin/meetings');
+
+        const stats = statsRes.data || { totalUsers: 0, totalMeetings: 0 };
+        const users = usersRes.data || [];
+        const meetings = meetingsRes.data || [];
+
+        let html = `
+            <div class="admin-container fade-in">
+                <div class="section-header">
+                    <h2>Admin Panel</h2>
+                </div>
+
+                <!-- Stats Cards -->
+                <div class="admin-stats">
+                    <div class="admin-card">
+                        <div class="admin-card-icon"><i class="fas fa-users"></i></div>
+                        <div class="admin-card-info">
+                            <h4>Total Pengguna</h4>
+                            <span>${stats.totalUsers}</span>
+                        </div>
+                    </div>
+                    <div class="admin-card">
+                        <div class="admin-card-icon"><i class="fas fa-handshake"></i></div>
+                        <div class="admin-card-info">
+                            <h4>Total Rapat</h4>
+                            <span>${stats.totalMeetings}</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- User Management Table -->
+                <div class="admin-table-section">
+                    <h3>Manajemen Pengguna</h3>
+                    <div class="table-responsive">
+                        <table class="admin-table">
+                            <thead>
+                                <tr>
+                                    <th>Nama</th>
+                                    <th>Email</th>
+                                    <th>Jabatan</th>
+                                    <th>Role</th>
+                                    <th>Aksi</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${users.map(u => `
+                                    <tr>
+                                        <td><strong>${u.name}</strong></td>
+                                        <td>${u.email}</td>
+                                        <td>${u.position || '-'}</td>
+                                        <td><span class="role-badge ${u.role}">${u.role === 'admin' ? 'Admin' : 'User'}</span></td>
+                                        <td>
+                                            ${u.id === state.currentUser.id 
+                                                ? '<span style="color: var(--text-muted); font-size: 0.85rem;">Anda Sendiri</span>' 
+                                                : `<button class="btn-sm" onclick="toggleUserRole('${u.id}', '${u.role === 'admin' ? 'user' : 'admin'}')">
+                                                    Ubah ke ${u.role === 'admin' ? 'User' : 'Admin'}
+                                                   </button>`
+                                            }
+                                        </td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Meetings Moderation Table -->
+                <div class="admin-table-section">
+                    <h3>Moderasi Notulensi Rapat</h3>
+                    <div class="table-responsive">
+                        <table class="admin-table">
+                            <thead>
+                                <tr>
+                                    <th>Judul Rapat</th>
+                                    <th>Tanggal & Waktu</th>
+                                    <th>Lokasi</th>
+                                    <th>Aksi</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${meetings.map(m => `
+                                    <tr>
+                                        <td><strong>${m.title}</strong></td>
+                                        <td>${formatDate(m.date)} &bull; ${m.time}</td>
+                                        <td>${m.location}</td>
+                                        <td>
+                                            <button class="btn-sm btn-sm-danger" onclick="adminDeleteMeeting('${m.id}')">
+                                                <i class="fas fa-trash"></i> Hapus
+                                            </button>
+                                        </td>
+                                    </tr>
+                                `).join('')}
+                                ${meetings.length === 0 ? '<tr><td colspan="4" style="text-align: center; color: var(--text-muted);">Tidak ada rapat dalam sistem.</td></tr>' : ''}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        `;
+        container.innerHTML = html;
+
+    } catch (err) {
+        showToast(err.message, 'error');
+        container.innerHTML = `
+            <div class="admin-container">
+                <div class="section-header">
+                    <h2>Admin Panel</h2>
+                </div>
+                <div style="text-align: center; padding: 3rem; color: #E63946;">
+                    <i class="fas fa-exclamation-triangle" style="font-size: 2.5rem; margin-bottom: 1rem;"></i>
+                    <p>Gagal memuat data admin: ${err.message}</p>
+                </div>
+            </div>
+        `;
+    }
+}
+
+async function toggleUserRole(userId, newRole) {
+    if (confirm(`Apakah Anda yakin ingin mengubah role pengguna ini menjadi ${newRole === 'admin' ? 'Admin' : 'User'}?`)) {
+        try {
+            await apiFetch(`/admin/users/${userId}/role`, {
+                method: 'PUT',
+                body: { role: newRole }
+            });
+            showToast('Role pengguna berhasil diubah', 'success');
+            renderPage();
+        } catch (err) {
+            showToast(err.message, 'error');
+        }
+    }
+}
+
+async function adminDeleteMeeting(meetingId) {
+    if (confirm('Apakah Anda yakin ingin menghapus rapat ini secara permanen sebagai Admin?')) {
+        try {
+            await apiFetch(`/admin/meetings/${meetingId}`, {
+                method: 'DELETE'
+            });
+            showToast('Rapat berhasil dihapus oleh Admin', 'success');
+            renderPage();
+        } catch (err) {
+            showToast(err.message, 'error');
+        }
+    }
 }
 
 function createMeetingCard(meeting) {
+    const tagsHtml = meeting.tags && meeting.tags.length > 0 
+        ? `<div class="meeting-tags">
+            ${meeting.tags.map(t => `<span class="tag-badge ${getTagColorClass(t)}">${t}</span>`).join('')}
+           </div>`
+        : '';
+
     return `
         <div class="meeting-card fade-in" onclick="editMeeting('${meeting.id}')">
             <div class="card-header">
@@ -304,6 +633,7 @@ function createMeetingCard(meeting) {
                 </div>
             </div>
             <h3>${meeting.title}</h3>
+            ${tagsHtml}
             <p>${meeting.description || 'Tidak ada deskripsi.'}</p>
             <div class="card-footer">
                 <div class="location-chip">
@@ -316,6 +646,15 @@ function createMeetingCard(meeting) {
             </div>
         </div>
     `;
+}
+
+function getTagColorClass(tag) {
+    const lower = tag.toLowerCase();
+    if (lower === 'proyek') return 'tag-proyek';
+    if (lower === 'pemasaran') return 'tag-pemasaran';
+    if (lower === 'evaluasi') return 'tag-evaluasi';
+    if (lower === 'harian') return 'tag-harian';
+    return 'tag-other';
 }
 
 // Helpers
@@ -338,6 +677,47 @@ function setupEventListeners() {
             if (page) setPage(page);
         });
     });
+
+    // Header Profile Trigger (pindah ke pojok kanan atas)
+    const profileTrigger = document.getElementById('header-profile-trigger');
+    if (profileTrigger) {
+        profileTrigger.addEventListener('click', () => {
+            setPage('profile');
+        });
+    }
+
+    // Modal Tag pills click handlers
+    document.querySelectorAll('#modal-tag-selector .tag-pill').forEach(pill => {
+        pill.addEventListener('click', () => {
+            const tag = pill.getAttribute('data-tag');
+            if (state.selectedTags.includes(tag)) {
+                state.selectedTags = state.selectedTags.filter(t => t !== tag);
+                pill.classList.remove('active');
+            } else {
+                state.selectedTags.push(tag);
+                pill.classList.add('active');
+            }
+        });
+    });
+
+    // Native Date & Time Picker showPicker trigger on focus/click
+    const triggerPicker = function() {
+        try {
+            this.showPicker();
+        } catch (e) {
+            console.log("showPicker not supported");
+        }
+    };
+    const dateInput = document.getElementById('date');
+    if (dateInput) {
+        dateInput.addEventListener('click', triggerPicker);
+        dateInput.addEventListener('focus', triggerPicker);
+    }
+    const timeInput = document.getElementById('time');
+    if (timeInput) {
+        timeInput.addEventListener('click', triggerPicker);
+        timeInput.addEventListener('focus', triggerPicker);
+    }
 
     // Modal
     document.getElementById('add-meeting-btn').addEventListener('click', openAddModal);
@@ -377,6 +757,12 @@ function openAddModal() {
     document.getElementById('modal-title').textContent = 'Buat Rapat Baru';
     document.getElementById('meeting-form').reset();
     document.getElementById('edit-id').value = '';
+    
+    // Reset tags
+    state.selectedTags = [];
+    document.querySelectorAll('#modal-tag-selector .tag-pill').forEach(p => p.classList.remove('active'));
+    document.getElementById('custom-tags').value = '';
+
     document.getElementById('modal-overlay').classList.add('active');
     document.getElementById('meeting-modal').classList.add('active');
 }
@@ -389,12 +775,20 @@ function closeModal() {
 async function handleMeetingSubmit(e) {
     e.preventDefault();
     const editId = document.getElementById('edit-id').value;
+
+    const customTagsStr = document.getElementById('custom-tags').value;
+    const customTags = customTagsStr 
+        ? customTagsStr.split(',').map(t => t.trim()).filter(t => t.length > 0)
+        : [];
+    const allTags = [...state.selectedTags, ...customTags];
+
     const meetingData = {
         title: document.getElementById('title').value,
         date: document.getElementById('date').value,
         time: document.getElementById('time').value,
         location: document.getElementById('location').value,
         description: document.getElementById('description').value,
+        tags: allTags,
         userId: state.currentUser.id
     };
 
@@ -435,6 +829,22 @@ function editMeeting(id) {
     document.getElementById('time').value = meeting.time;
     document.getElementById('location').value = meeting.location;
     document.getElementById('description').value = meeting.description;
+
+    // Set selected tags
+    state.selectedTags = meeting.tags || [];
+    const predefined = ["Proyek", "Pemasaran", "Evaluasi", "Harian"];
+    
+    document.querySelectorAll('#modal-tag-selector .tag-pill').forEach(p => {
+        const tag = p.getAttribute('data-tag');
+        if (state.selectedTags.includes(tag)) {
+            p.classList.add('active');
+        } else {
+            p.classList.remove('active');
+        }
+    });
+
+    const custom = state.selectedTags.filter(t => !predefined.includes(t));
+    document.getElementById('custom-tags').value = custom.join(', ');
 
     document.getElementById('modal-overlay').classList.add('active');
     document.getElementById('meeting-modal').classList.add('active');
